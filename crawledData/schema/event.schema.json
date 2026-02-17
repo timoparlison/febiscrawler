@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FEBIS Event",
+  "description": "Crawled event data from the FEBIS General Assembly archive",
+  "type": "object",
+  "required": ["id", "title", "sourceUrl", "crawledAt", "documents", "videos", "galleries"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "URL slug identifier, e.g. '2025-rhodes'",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "title": {
+      "type": "string",
+      "description": "Display title from the website"
+    },
+    "dateRange": {
+      "type": "string",
+      "description": "Date range as displayed, e.g. '24.09.2025 - 26.09.2025'"
+    },
+    "location": {
+      "type": "string",
+      "description": "City or venue name"
+    },
+    "sourceUrl": {
+      "type": "string",
+      "format": "uri",
+      "description": "Original page URL on the FEBIS website"
+    },
+    "crawledAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when this data was crawled"
+    },
+    "hotelInfo": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "address": { "type": "string" },
+        "websiteUrl": { "type": "string", "format": "uri" },
+        "images": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Relative paths to hotel images"
+        }
+      },
+      "required": ["name", "address", "images"]
+    },
+    "documents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "filename", "category", "originalUrl", "localPath"],
+        "properties": {
+          "title": { "type": "string" },
+          "filename": { "type": "string" },
+          "category": {
+            "type": "string",
+            "enum": ["CONVOCATION", "INVITATION", "AGENDA", "PROGRAM", "PARTICIPANTS", "PRESENTATION", "REPORT", "SURVEY", "SPONSORING", "COMPLIANCE", "MINUTES", "OTHER"]
+          },
+          "originalUrl": { "type": "string", "format": "uri" },
+          "localPath": { "type": "string" },
+          "sizeDescription": { "type": "string" }
+        }
+      }
+    },
+    "videos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "youtubeUrl", "youtubeId"],
+        "properties": {
+          "title": { "type": "string" },
+          "youtubeUrl": { "type": "string", "format": "uri" },
+          "youtubeId": { "type": "string" }
+        }
+      }
+    },
+    "galleries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "sortOrder", "images"],
+        "properties": {
+          "title": { "type": "string" },
+          "sortOrder": { "type": "integer", "minimum": 0 },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["originalUrl", "localPath", "sortOrder"],
+              "properties": {
+                "originalUrl": { "type": "string", "format": "uri" },
+                "localPath": { "type": "string" },
+                "sortOrder": { "type": "integer", "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
