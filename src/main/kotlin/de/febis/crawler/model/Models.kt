@@ -1,25 +1,34 @@
 package de.febis.crawler.model
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 @Serializable
 data class Event(
     val id: String,
     val title: String,
-    val dateRange: String?,
-    val location: String?,
-    val hotelInfo: HotelInfo?,
-    val documents: List<Document>,
-    val videos: List<Video>,
-    val galleries: List<Gallery>
+    val eventType: String = "general-assembly",
+    val dateStart: String? = null,
+    val dateEnd: String? = null,
+    val locationCity: String? = null,
+    val locationCountry: String? = null,
+    val description: String? = null,
+    val sourceUrl: String,
+    val crawledAt: String,
+    val hotelName: String? = null,
+    val hotelAddress: String? = null,
+    val hotelWebsite: String? = null,
+    val hotelImages: List<HotelImage> = emptyList(),
+    val documents: List<Document> = emptyList(),
+    val videos: List<Video> = emptyList(),
+    val galleries: List<Gallery> = emptyList()
 )
 
 @Serializable
-data class HotelInfo(
-    val name: String,
-    val address: String,
-    val websiteUrl: String?,
-    val images: List<String>
+data class HotelImage(
+    val originalUrl: String,
+    val localPath: String,
+    val sortOrder: Int
 )
 
 @Serializable
@@ -29,43 +38,45 @@ data class Document(
     val category: DocumentCategory,
     val originalUrl: String,
     val localPath: String,
-    val sizeDescription: String
+    val sortOrder: Int,
+    val sizeDescription: String = ""
 )
 
 @Serializable
 enum class DocumentCategory {
-    CONVOCATION,
-    INVITATION,
-    AGENDA,
-    PROGRAM,
-    PARTICIPANTS,
-    PRESENTATION,
-    REPORT,
-    SURVEY,
-    SPONSORING,
-    COMPLIANCE,
-    MINUTES,
-    OTHER
+    @SerialName("convocation") CONVOCATION,
+    @SerialName("invitation") INVITATION,
+    @SerialName("agenda") AGENDA,
+    @SerialName("program") PROGRAM,
+    @SerialName("participants") PARTICIPANTS,
+    @SerialName("presentation") PRESENTATION,
+    @SerialName("report") REPORT,
+    @SerialName("survey") SURVEY,
+    @SerialName("sponsoring") SPONSORING,
+    @SerialName("compliance") COMPLIANCE,
+    @SerialName("minutes") MINUTES,
+    @SerialName("other") OTHER
 }
 
 @Serializable
 data class Video(
     val title: String,
     val youtubeUrl: String,
-    val youtubeId: String
+    val sortOrder: Int
 )
 
 @Serializable
 data class Gallery(
     val title: String,
     val sortOrder: Int,
-    val images: List<GalleryImage>
+    val images: List<GalleryImage> = emptyList()
 )
 
 @Serializable
 data class GalleryImage(
     val originalUrl: String,
     val localPath: String,
+    val caption: String? = null,
     val sortOrder: Int
 )
 

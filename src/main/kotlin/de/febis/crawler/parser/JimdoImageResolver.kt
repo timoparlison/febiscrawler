@@ -1,17 +1,16 @@
 package de.febis.crawler.parser
 
 /**
- * Resolves Jimdo thumbnail URLs to full resolution image URLs.
+ * Resolves Jimdo CDN image URLs to full resolution.
+ *
+ * Jimdo uses Cloudflare image resizing:
+ *   https://image.jimcdn.com/cdn-cgi/image/width=2048,height=2048,fit=contain,format=jpg,/app/cms/storage/...
+ * Full resolution (strip CDN transform):
+ *   https://image.jimcdn.com/app/cms/storage/...
  */
 object JimdoImageResolver {
-    /**
-     * Converts a Jimdo thumbnail URL to the full resolution URL.
-     *
-     * Jimdo URLs follow the pattern:
-     * - Thumbnail: https://image.jimcdn.com/app/cms/image/transf/dimension=150x10000:format=jpg/...
-     * - Full: https://image.jimcdn.com/app/cms/image/transf/none/...
-     */
-    fun resolveFullResolution(thumbnailUrl: String): String {
-        TODO("Implement URL transformation for full resolution images")
-    }
+    private val cdnPattern = Regex("(/cdn-cgi/image/[^/]*)")
+
+    fun resolveFullResolution(url: String): String =
+        url.replace(cdnPattern, "")
 }

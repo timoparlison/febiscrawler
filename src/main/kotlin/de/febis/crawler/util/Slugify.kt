@@ -1,15 +1,12 @@
 package de.febis.crawler.util
 
-/**
- * Converts strings to URL-safe slugs.
- */
+import java.text.Normalizer
+
 object Slugify {
-    /**
-     * Converts a string to a slug (lowercase, hyphens, no special characters).
-     *
-     * Example: "2024 Nice (GA)" -> "2024-nice-ga"
-     */
-    fun slugify(input: String): String {
-        TODO("Implement slugification")
-    }
+    fun slugify(input: String): String =
+        Normalizer.normalize(input, Normalizer.Form.NFD)
+            .replace(Regex("[\\p{InCombiningDiacriticalMarks}]"), "")
+            .lowercase()
+            .replace(Regex("[^a-z0-9]+"), "-")
+            .trim('-')
 }

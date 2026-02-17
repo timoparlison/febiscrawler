@@ -3,8 +3,11 @@ package de.febis.crawler
 import de.febis.crawler.client.AuthenticatedSession
 import de.febis.crawler.client.HttpClientFactory
 import de.febis.crawler.config.CrawlerConfig
+import de.febis.crawler.downloader.DownloadQueue
+import de.febis.crawler.downloader.FileDownloader
 import de.febis.crawler.model.CrawlerResult
 import de.febis.crawler.output.OutputWriter
+import de.febis.crawler.parser.EventPageParser
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
 
@@ -37,7 +40,7 @@ private fun parseArguments(args: Array<String>): CliConfig {
 
     val iterator = args.iterator()
     while (iterator.hasNext()) {
-        when (val arg = iterator.next()) {
+        when (iterator.next()) {
             "--dry-run" -> dryRun = true
             "--resume" -> resume = true
             "--event" -> {
@@ -75,35 +78,77 @@ private fun runSingleEvent(config: CrawlerConfig, eventId: String) {
         val client = HttpClientFactory.create()
         try {
             val session = AuthenticatedSession(client, config)
-
             val eventUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/$eventId/"
 
+            // 1. Authenticate
             when (val authResult = session.authenticate(eventUrl)) {
-                is CrawlerResult.Success -> {
-                    logger.info { "Fetching event page: $eventUrl" }
-
-                    when (val pageResult = session.fetchPage(eventUrl)) {
-                        is CrawlerResult.Success -> {
-                            val html = pageResult.data
-                            logger.info { "Event page loaded successfully (${html.length} chars)" }
-
-                            // Create output directories
-                            val outputWriter = OutputWriter(config.outputDir)
-                            val dirs = outputWriter.createEventDirectories(eventId)
-                            logger.info { "Created output structure at ${dirs.root}" }
-
-                            // TODO: Parse event page HTML and populate event.json
-                            // TODO: Download documents and images
-                        }
-                        is CrawlerResult.Failure -> {
-                            logger.error { "Failed to fetch event page: ${pageResult.error}" }
-                        }
-                    }
-                }
                 is CrawlerResult.Failure -> {
                     logger.error { "Authentication failed: ${authResult.error}" }
+                    return@runBlocking
+                }
+                is CrawlerResult.Success -> {}
+            }
+
+            // 2. Fetch event page
+            val html = when (val pageResult = session.fetchPage(eventUrl)) {
+                is CrawlerResult.Success -> pageResult.data
+                is CrawlerResult.Failure -> {
+                    logger.error { "Failed to fetch event page: ${pageResult.error}" }
+                    return@runBlocking
                 }
             }
+
+            // 3. Parse HTML
+            val parser = EventPageParser(config.baseUrl)
+            val event = when (val parseResult = parser.parse(html, eventId, eventUrl)) {
+                is CrawlerResult.Success -> parseResult.data
+                is CrawlerResult.Failure -> {
+                    logger.error { "Failed to parse event page: ${parseResult.error}" }
+                    return@runBlocking
+                }
+            }
+
+            // 4. Create output directories
+            val outputWriter = OutputWriter(config.outputDir)
+            val dirs = outputWriter.createEventDirectories(eventId)
+
+            // 5. Download all files
+            val downloader = FileDownloader(client, config.maxRetries)
+            val queue = DownloadQueue(downloader, config.maxParallelDownloads, config.requestDelayMs)
+
+            val downloadTasks = mutableListOf<DownloadQueue.DownloadTask>()
+
+            // Documents
+            for (doc in event.documents) {
+                downloadTasks.add(DownloadQueue.DownloadTask(doc.originalUrl, dirs.root.resolve(doc.localPath)))
+            }
+
+            // Hotel images
+            for (img in event.hotelImages) {
+                downloadTasks.add(DownloadQueue.DownloadTask(img.originalUrl, dirs.root.resolve(img.localPath)))
+            }
+
+            // Gallery images
+            for (gallery in event.galleries) {
+                val gallerySlug = gallery.images.firstOrNull()?.localPath
+                    ?.substringAfter("images/")?.substringBefore("/")
+                if (gallerySlug != null) {
+                    outputWriter.createGalleryDirectory(eventId, gallerySlug)
+                }
+                for (img in gallery.images) {
+                    downloadTasks.add(DownloadQueue.DownloadTask(img.originalUrl, dirs.root.resolve(img.localPath)))
+                }
+            }
+
+            val results = queue.downloadAll(downloadTasks)
+            val succeeded = results.count { it is CrawlerResult.Success }
+            val failed = results.count { it is CrawlerResult.Failure }
+            logger.info { "Downloads complete: $succeeded succeeded, $failed failed" }
+
+            // 6. Write event.json
+            outputWriter.writeEvent(event)
+            logger.info { "Event '$eventId' crawled successfully → ${dirs.root}" }
+
         } finally {
             client.close()
         }

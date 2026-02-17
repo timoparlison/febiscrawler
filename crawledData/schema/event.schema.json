@@ -1,83 +1,118 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "FEBIS Event",
-  "description": "Crawled event data from the FEBIS General Assembly archive",
+  "description": "Crawled event data from the FEBIS General Assembly archive. Field names align with the Supabase target schema in febis-connect.",
   "type": "object",
-  "required": ["id", "title", "sourceUrl", "crawledAt", "documents", "videos", "galleries"],
+  "required": ["id", "title", "eventType", "sourceUrl", "crawledAt"],
   "properties": {
     "id": {
       "type": "string",
-      "description": "URL slug identifier, e.g. '2025-rhodes'",
+      "description": "URL slug identifier, matches directory name. Maps to events.slug in Supabase.",
       "pattern": "^[a-z0-9-]+$"
     },
     "title": {
       "type": "string",
-      "description": "Display title from the website"
+      "description": "Display title from the website. Maps to events.title."
     },
-    "dateRange": {
+    "eventType": {
       "type": "string",
-      "description": "Date range as displayed, e.g. '24.09.2025 - 26.09.2025'"
+      "enum": ["general-assembly", "spring-meeting", "webinar", "training", "workshop"],
+      "description": "Maps to events.event_type."
     },
-    "location": {
+    "dateStart": {
       "type": "string",
-      "description": "City or venue name"
+      "format": "date",
+      "description": "ISO date (YYYY-MM-DD). Maps to events.date_start."
+    },
+    "dateEnd": {
+      "type": "string",
+      "format": "date",
+      "description": "ISO date (YYYY-MM-DD). Maps to events.date_end."
+    },
+    "locationCity": {
+      "type": "string",
+      "description": "City name. Maps to events.location_city."
+    },
+    "locationCountry": {
+      "type": "string",
+      "description": "ISO 3166-1 alpha-2 country code (e.g. 'GR'). Maps to events.location_country."
+    },
+    "description": {
+      "type": "string",
+      "description": "Event description text. Maps to events.description."
     },
     "sourceUrl": {
       "type": "string",
       "format": "uri",
-      "description": "Original page URL on the FEBIS website"
+      "description": "Original page URL on the FEBIS website."
     },
     "crawledAt": {
       "type": "string",
       "format": "date-time",
-      "description": "ISO 8601 timestamp of when this data was crawled"
+      "description": "ISO 8601 timestamp of crawl time."
     },
-    "hotelInfo": {
-      "type": "object",
-      "properties": {
-        "name": { "type": "string" },
-        "address": { "type": "string" },
-        "websiteUrl": { "type": "string", "format": "uri" },
-        "images": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "Relative paths to hotel images"
+    "hotelName": {
+      "type": "string",
+      "description": "Maps to events.hotel_name."
+    },
+    "hotelAddress": {
+      "type": "string",
+      "description": "Maps to events.hotel_address."
+    },
+    "hotelWebsite": {
+      "type": "string",
+      "format": "uri",
+      "description": "Maps to events.hotel_website."
+    },
+    "hotelImages": {
+      "type": "array",
+      "description": "Maps to event_hotel_images table.",
+      "items": {
+        "type": "object",
+        "required": ["originalUrl", "localPath", "sortOrder"],
+        "properties": {
+          "originalUrl": { "type": "string", "format": "uri" },
+          "localPath": { "type": "string", "description": "Relative path, e.g. 'images/hotel/001.jpg'" },
+          "sortOrder": { "type": "integer", "minimum": 0 }
         }
-      },
-      "required": ["name", "address", "images"]
+      }
     },
     "documents": {
       "type": "array",
+      "description": "Maps to event_documents table.",
       "items": {
         "type": "object",
-        "required": ["title", "filename", "category", "originalUrl", "localPath"],
+        "required": ["title", "filename", "category", "originalUrl", "localPath", "sortOrder"],
         "properties": {
           "title": { "type": "string" },
           "filename": { "type": "string" },
           "category": {
             "type": "string",
-            "enum": ["CONVOCATION", "INVITATION", "AGENDA", "PROGRAM", "PARTICIPANTS", "PRESENTATION", "REPORT", "SURVEY", "SPONSORING", "COMPLIANCE", "MINUTES", "OTHER"]
+            "enum": ["convocation", "invitation", "agenda", "program", "participants", "presentation", "report", "survey", "sponsoring", "compliance", "minutes", "other"]
           },
           "originalUrl": { "type": "string", "format": "uri" },
-          "localPath": { "type": "string" },
-          "sizeDescription": { "type": "string" }
+          "localPath": { "type": "string", "description": "Relative path, e.g. 'documents/agenda-2025.pdf'" },
+          "sortOrder": { "type": "integer", "minimum": 0 },
+          "sizeDescription": { "type": "string", "description": "Human-readable, e.g. '418.1 KB'" }
         }
       }
     },
     "videos": {
       "type": "array",
+      "description": "Maps to event_videos table.",
       "items": {
         "type": "object",
-        "required": ["title", "youtubeUrl", "youtubeId"],
+        "required": ["title", "youtubeUrl", "sortOrder"],
         "properties": {
           "title": { "type": "string" },
-          "youtubeUrl": { "type": "string", "format": "uri" },
-          "youtubeId": { "type": "string" }
+          "youtubeUrl": { "type": "string", "format": "uri", "description": "Maps to event_videos.youtube_url" },
+          "sortOrder": { "type": "integer", "minimum": 0 }
         }
       }
     },
     "galleries": {
       "type": "array",
+      "description": "Maps to event_galleries + event_gallery_images tables.",
       "items": {
         "type": "object",
         "required": ["title", "sortOrder", "images"],
@@ -91,7 +126,8 @@
               "required": ["originalUrl", "localPath", "sortOrder"],
               "properties": {
                 "originalUrl": { "type": "string", "format": "uri" },
-                "localPath": { "type": "string" },
+                "localPath": { "type": "string", "description": "Relative path, e.g. 'images/gala-dinner/001.jpg'" },
+                "caption": { "type": "string" },
                 "sortOrder": { "type": "integer", "minimum": 0 }
               }
             }

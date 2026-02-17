@@ -1,11 +1,17 @@
 package de.febis.crawler.downloader
 
 import de.febis.crawler.model.CrawlerResult
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import mu.KotlinLogging
 import java.nio.file.Path
 
-/**
- * Manages parallel downloads with rate limiting.
- */
+private val logger = KotlinLogging.logger {}
+
 class DownloadQueue(
     private val downloader: FileDownloader,
     private val maxParallelDownloads: Int = 5,
@@ -17,6 +23,21 @@ class DownloadQueue(
     )
 
     suspend fun downloadAll(tasks: List<DownloadTask>): List<CrawlerResult<Path>> {
-        TODO("Implement parallel downloads with semaphore and rate limiting")
+        if (tasks.isEmpty()) return emptyList()
+
+        logger.info { "Downloading ${tasks.size} files (max $maxParallelDownloads parallel)" }
+        val semaphore = Semaphore(maxParallelDownloads)
+
+        return coroutineScope {
+            tasks.mapIndexed { idx, task ->
+                async {
+                    semaphore.withPermit {
+                        delay(requestDelayMs)
+                        logger.info { "[${idx + 1}/${tasks.size}] Downloading ${task.url.substringAfterLast("/").substringBefore("?")}" }
+                        downloader.download(task.url, task.targetPath)
+                    }
+                }
+            }.awaitAll()
+        }
     }
 }
