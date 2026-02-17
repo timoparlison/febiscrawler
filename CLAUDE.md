@@ -12,17 +12,17 @@ Kotlin CLI tool that crawls the FEBIS Jimdo website (password-protected members 
 # Build
 ./gradlew build
 
-# Run full migration
+# Run full migration (skips already-crawled events)
 ./gradlew run
 
-# Run single event (for testing)
-./gradlew run --args="--event 2024-nice"
+# Run single event
+./gradlew run --args="--event 2025-rhodes"
 
-# Dry run (index only)
+# Re-download an already-crawled event
+./gradlew run --args="--event 2025-rhodes --force"
+
+# Dry run (list events and crawl status)
 ./gradlew run --args="--dry-run"
-
-# Resume after interruption
-./gradlew run --args="--resume"
 
 # Run tests
 ./gradlew test
@@ -45,12 +45,12 @@ Key packages under `src/main/kotlin/de/febis/crawler/`:
 
 ## Key Technical Details
 
-- **All method bodies are TODO stubs** – scaffold is complete, implementation needed
-- Jimdo login is password-only (POST to `/members-login`, password: "torino")
-- Jimdo image full-res: replace `dimension=\d+x\d+:?` with `none` in URL, strip `format=jpg/`
-- YouTube IDs extracted from `<iframe>` embed URLs
+- Jimdo login: POST `password` + `do_login=yes` to the target page URL (not a separate login endpoint)
+- Jimdo image full-res: strip `/cdn-cgi/image/{params}` from CDN URLs
+- YouTube IDs extracted from `<iframe>` embed URLs (`data-src` attribute)
 - Downloads: max 5 parallel (Semaphore), 100ms delay between requests, 3 retries
-- `migration-state.json` enables resume after interruption
+- Skip-check: event is considered crawled if `crawledData/events/{id}/event.json` exists
+- `--force` flag overrides skip-check for single-event mode
 
 ## Documentation
 
