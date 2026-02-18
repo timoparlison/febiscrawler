@@ -17,5 +17,8 @@ crawledData/**
 !crawledData/schema/
 !crawledData/schema/**
 
+# Environment / Secrets
+.env
+
 # OS
 .DS_Store

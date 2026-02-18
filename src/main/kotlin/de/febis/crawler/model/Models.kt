@@ -90,6 +90,7 @@ sealed class CrawlerError {
     data class NetworkError(val url: String, val cause: Exception) : CrawlerError()
     data class ParseError(val url: String, val message: String) : CrawlerError()
     data class AuthError(val message: String) : CrawlerError()
+    data class SupabaseError(val operation: String, val message: String) : CrawlerError()
 }
 
 // Index entry for events-index.json

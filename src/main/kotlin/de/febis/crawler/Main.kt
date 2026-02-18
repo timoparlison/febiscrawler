@@ -3,26 +3,34 @@ package de.febis.crawler
 import de.febis.crawler.client.AuthenticatedSession
 import de.febis.crawler.client.HttpClientFactory
 import de.febis.crawler.config.CrawlerConfig
+import de.febis.crawler.config.EnvLoader
 import de.febis.crawler.downloader.DownloadQueue
 import de.febis.crawler.downloader.FileDownloader
 import de.febis.crawler.model.CrawlerResult
+import de.febis.crawler.model.Event
 import de.febis.crawler.model.EventIndexEntry
 import de.febis.crawler.output.MigrationLog
 import de.febis.crawler.output.OutputWriter
 import de.febis.crawler.parser.EventIndexParser
 import de.febis.crawler.parser.EventPageParser
+import de.febis.crawler.upload.SupabaseClient
+import de.febis.crawler.upload.SupabaseUploader
 import io.ktor.client.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import mu.KotlinLogging
+import java.nio.file.Files
 
 private val logger = KotlinLogging.logger {}
 
 fun main(args: Array<String>) {
     logger.info { "FEBIS Crawler starting..." }
 
+    EnvLoader.load()
     val config = parseArguments(args)
 
     when {
+        config.uploadType != null -> runUpload(config.crawlerConfig, config.uploadType, config.uploadTarget, config.force)
         config.dryRun -> runDryRun(config.crawlerConfig)
         config.singleEvent != null -> runSingleEvent(config.crawlerConfig, config.singleEvent, config.force)
         else -> runFullMigration(config.crawlerConfig)
@@ -33,13 +41,17 @@ private data class CliConfig(
     val crawlerConfig: CrawlerConfig,
     val dryRun: Boolean = false,
     val singleEvent: String? = null,
-    val force: Boolean = false
+    val force: Boolean = false,
+    val uploadType: String? = null,
+    val uploadTarget: String? = null
 )
 
 private fun parseArguments(args: Array<String>): CliConfig {
     var dryRun = false
     var singleEvent: String? = null
     var force = false
+    var uploadType: String? = null
+    var uploadTarget: String? = null
 
     val iterator = args.iterator()
     while (iterator.hasNext()) {
@@ -53,19 +65,40 @@ private fun parseArguments(args: Array<String>): CliConfig {
                     logger.error { "--event requires an event ID" }
                 }
             }
+            "--upload" -> {
+                if (iterator.hasNext()) {
+                    uploadType = iterator.next()
+                    if (iterator.hasNext()) {
+                        val next = iterator.next()
+                        if (next.startsWith("--")) {
+                            // It's a flag, not a target — handle it
+                            if (next == "--force") force = true
+                        } else {
+                            uploadTarget = next
+                        }
+                    }
+                } else {
+                    logger.error { "--upload requires a type (e.g. 'event')" }
+                }
+            }
         }
     }
 
     val crawlerConfig = CrawlerConfig(
-        baseUrl = System.getenv("FEBIS_BASE_URL") ?: "https://www.febis.org",
-        indexPath = System.getenv("FEBIS_INDEX_PATH") ?: "/general-assembly"
+        baseUrl = EnvLoader.get("FEBIS_BASE_URL") ?: "https://www.febis.org",
+        password = EnvLoader.require("FEBIS_MEMBER_PASSWORD"),
+        indexPath = EnvLoader.get("FEBIS_INDEX_PATH") ?: "/general-assembly",
+        supabaseProjectId = EnvLoader.get("SUPABASE_PROJECT_ID"),
+        supabaseServiceRoleKey = EnvLoader.get("SUPABASE_SERVICE_ROLE_KEY")
     )
 
     return CliConfig(
         crawlerConfig = crawlerConfig,
         dryRun = dryRun,
         singleEvent = singleEvent,
-        force = force
+        force = force,
+        uploadType = uploadType,
+        uploadTarget = uploadTarget
     )
 }
 
@@ -277,4 +310,53 @@ private suspend fun processEvent(
     // 5. Write event.json (marks event as crawled for skip-check)
     outputWriter.writeEvent(event)
     logger.info { "Event '$eventId' crawled successfully → ${dirs.root}" }
+}
+
+// ── Upload ──────────────────────────────────────────────────────────────────
+
+private fun runUpload(config: CrawlerConfig, type: String, target: String?, force: Boolean) {
+    when (type) {
+        "event" -> {
+            if (target == null) {
+                logger.error { "--upload event requires an event ID, e.g. --upload event 2025-rhodes" }
+                return
+            }
+            runUploadEvent(config, target, force)
+        }
+        else -> {
+            logger.error { "Unknown upload type '$type'. Supported: event" }
+        }
+    }
+}
+
+private fun runUploadEvent(config: CrawlerConfig, eventId: String, force: Boolean) {
+    if (config.supabaseProjectId.isNullOrBlank() || config.supabaseServiceRoleKey.isNullOrBlank()) {
+        logger.error { "SUPABASE_PROJECT_ID and SUPABASE_SERVICE_ROLE_KEY must be set in .env" }
+        return
+    }
+
+    val eventDir = config.outputDir.resolve("events").resolve(eventId)
+    val eventJsonFile = eventDir.resolve("event.json")
+    if (!Files.exists(eventJsonFile)) {
+        logger.error { "Event not crawled yet: $eventJsonFile not found. Crawl it first with --event $eventId" }
+        return
+    }
+
+    val json = Json { ignoreUnknownKeys = true }
+    val event = json.decodeFromString<Event>(Files.readString(eventJsonFile))
+    logger.info { "Loaded event '${event.id}' (${event.title})" }
+
+    runBlocking {
+        val httpClient = HttpClientFactory.create()
+        try {
+            val supabaseClient = SupabaseClient(httpClient, config)
+            val uploader = SupabaseUploader(supabaseClient, eventDir)
+            when (val result = uploader.upload(event, force)) {
+                is CrawlerResult.Success -> logger.info { "Event '$eventId' uploaded successfully" }
+                is CrawlerResult.Failure -> logger.error { "Upload failed: ${result.error}" }
+            }
+        } finally {
+            httpClient.close()
+        }
+    }
 }
