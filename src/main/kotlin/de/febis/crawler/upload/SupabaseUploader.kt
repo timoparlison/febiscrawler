@@ -5,6 +5,9 @@ import de.febis.crawler.util.Slugify
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.serialization.json.*
 import mu.KotlinLogging
 import java.io.File
@@ -14,9 +17,13 @@ private val logger = KotlinLogging.logger {}
 
 class SupabaseUploader(
     private val client: SupabaseClient,
-    private val eventDir: Path
+    private val eventDir: Path,
+    private val maxParallelUploads: Int = 3,
+    private val requestDelayMs: Long = 200,
+    private val maxRetries: Int = 3
 ) {
     private val storageBucket = "event-images"
+    private val semaphore = Semaphore(maxParallelUploads)
 
     suspend fun upload(event: Event, force: Boolean): CrawlerResult<Unit> {
         try {
@@ -95,46 +102,77 @@ class SupabaseUploader(
     }
 
     private suspend fun uploadDocuments(event: Event): Map<String, String> = coroutineScope {
-        event.documents.map { doc ->
+        logger.info { "Uploading ${event.documents.size} documents (max $maxParallelUploads parallel)" }
+        event.documents.mapIndexed { idx, doc ->
             async {
-                val file = eventDir.resolve(doc.localPath).toFile()
-                val storagePath = "${event.id}/documents/${doc.filename}"
-                doc.localPath to uploadFileIfExists(file, storagePath)
-            }
-        }.awaitAll().toMap()
-    }
-
-    private suspend fun uploadHotelImages(event: Event): Map<String, String> = coroutineScope {
-        event.hotelImages.mapIndexed { idx, img ->
-            async {
-                val file = eventDir.resolve(img.localPath).toFile()
-                val ext = file.extension.ifEmpty { "jpg" }
-                val storagePath = "${event.id}/hotel/${String.format("%03d", idx + 1)}.$ext"
-                img.localPath to uploadFileIfExists(file, storagePath)
-            }
-        }.awaitAll().toMap()
-    }
-
-    private suspend fun uploadGalleryImages(event: Event): Map<String, String> = coroutineScope {
-        event.galleries.flatMap { gallery ->
-            val gallerySlug = Slugify.slugify(gallery.title)
-            gallery.images.mapIndexed { idx, img ->
-                async {
-                    val file = eventDir.resolve(img.localPath).toFile()
-                    val ext = file.extension.ifEmpty { "jpg" }
-                    val storagePath = "${event.id}/galleries/$gallerySlug/${String.format("%03d", idx + 1)}.$ext"
-                    img.localPath to uploadFileIfExists(file, storagePath)
+                semaphore.withPermit {
+                    delay(requestDelayMs)
+                    val file = eventDir.resolve(doc.localPath).toFile()
+                    val storagePath = "${event.id}/documents/${doc.filename}"
+                    logger.info { "[${idx + 1}/${event.documents.size}] Uploading doc: ${doc.filename}" }
+                    doc.localPath to uploadFileWithRetry(file, storagePath)
                 }
             }
         }.awaitAll().toMap()
     }
 
-    private suspend fun uploadFileIfExists(file: File, storagePath: String): String {
+    private suspend fun uploadHotelImages(event: Event): Map<String, String> = coroutineScope {
+        logger.info { "Uploading ${event.hotelImages.size} hotel images (max $maxParallelUploads parallel)" }
+        event.hotelImages.mapIndexed { idx, img ->
+            async {
+                semaphore.withPermit {
+                    delay(requestDelayMs)
+                    val file = eventDir.resolve(img.localPath).toFile()
+                    val ext = file.extension.ifEmpty { "jpg" }
+                    val storagePath = "${event.id}/hotel/${String.format("%03d", idx + 1)}.$ext"
+                    logger.info { "[${idx + 1}/${event.hotelImages.size}] Uploading hotel image: ${file.name}" }
+                    img.localPath to uploadFileWithRetry(file, storagePath)
+                }
+            }
+        }.awaitAll().toMap()
+    }
+
+    private suspend fun uploadGalleryImages(event: Event): Map<String, String> = coroutineScope {
+        val allImages = event.galleries.flatMap { it.images }
+        logger.info { "Uploading ${allImages.size} gallery images (max $maxParallelUploads parallel)" }
+        var counter = 0
+        event.galleries.flatMap { gallery ->
+            val gallerySlug = Slugify.slugify(gallery.title)
+            gallery.images.mapIndexed { idx, img ->
+                val num = ++counter
+                async {
+                    semaphore.withPermit {
+                        delay(requestDelayMs)
+                        val file = eventDir.resolve(img.localPath).toFile()
+                        val ext = file.extension.ifEmpty { "jpg" }
+                        val storagePath = "${event.id}/galleries/$gallerySlug/${String.format("%03d", idx + 1)}.$ext"
+                        logger.info { "[$num/${allImages.size}] Uploading gallery image: ${gallery.title}/${file.name}" }
+                        img.localPath to uploadFileWithRetry(file, storagePath)
+                    }
+                }
+            }
+        }.awaitAll().toMap()
+    }
+
+    private suspend fun uploadFileWithRetry(file: File, storagePath: String): String {
         if (!file.exists()) {
-            logger.warn { "File not found: $file – uploading placeholder skipped" }
+            logger.warn { "File not found: $file – skipped" }
             return ""
         }
-        logger.debug { "Uploading ${file.name} → $storageBucket/$storagePath" }
-        return client.uploadFile(storageBucket, storagePath, file)
+        var lastException: Exception? = null
+        for (attempt in 1..maxRetries) {
+            try {
+                return client.uploadFile(storageBucket, storagePath, file)
+            } catch (e: Exception) {
+                lastException = e
+                if (attempt < maxRetries) {
+                    val backoffMs = requestDelayMs * attempt * 2
+                    logger.warn { "Upload failed for ${file.name} (attempt $attempt/$maxRetries): ${e.message} – retrying in ${backoffMs}ms" }
+                    delay(backoffMs)
+                }
+            }
+        }
+        logger.error { "Upload failed for ${file.name} after $maxRetries attempts: ${lastException?.message}" }
+        throw lastException!!
     }
 }
