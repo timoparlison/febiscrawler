@@ -1,5 +1,6 @@
 package de.febis.crawler.upload
 
+import de.febis.crawler.migrate.BoardMemberData
 import de.febis.crawler.migrate.TeamMemberData
 import de.febis.crawler.model.*
 import kotlinx.serialization.json.*
@@ -54,6 +55,19 @@ object SupabaseMapper {
         put("image_url", imageUrl)
         put("caption", caption?.let { JsonPrimitive(it) } ?: JsonNull)
         put("sort_order", sortOrder)
+    }
+
+    fun buildBoardMemberRow(member: BoardMemberData, imageUrl: String?): JsonObject = buildJsonObject {
+        put("name", member.name)
+        put("role", member.role?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("company", member.company?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("location", member.location?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("current_positions", member.currentPositions?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("profile", member.profile?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("ambition", member.ambition?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("linkedin_url", member.linkedinUrl?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("image_url", imageUrl?.let { JsonPrimitive(it) } ?: JsonNull)
+        put("sort_order", member.sortOrder)
     }
 
     fun buildTeamMemberRow(member: TeamMemberData, imageUrl: String?): JsonObject = buildJsonObject {

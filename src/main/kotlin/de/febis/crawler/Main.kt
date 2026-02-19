@@ -13,6 +13,7 @@ import de.febis.crawler.output.MigrationLog
 import de.febis.crawler.output.OutputWriter
 import de.febis.crawler.parser.EventIndexParser
 import de.febis.crawler.parser.EventPageParser
+import de.febis.crawler.migrate.BoardMemberMigrator
 import de.febis.crawler.migrate.TeamMemberMigrator
 import de.febis.crawler.upload.SupabaseClient
 import de.febis.crawler.upload.SupabaseUploader
@@ -359,8 +360,23 @@ private fun runMigrate(config: CrawlerConfig, type: String, force: Boolean) {
                 }
             }
         }
+        "boardmembers" -> {
+            runBlocking {
+                val httpClient = HttpClientFactory.create()
+                try {
+                    val supabaseClient = SupabaseClient(httpClient, config)
+                    val migrator = BoardMemberMigrator(httpClient, supabaseClient, config)
+                    when (val result = migrator.migrate(force)) {
+                        is CrawlerResult.Success -> logger.info { "Board members migration completed successfully" }
+                        is CrawlerResult.Failure -> logger.error { "Board members migration failed: ${result.error}" }
+                    }
+                } finally {
+                    httpClient.close()
+                }
+            }
+        }
         else -> {
-            logger.error { "Unknown migrate type '$type'. Supported: teammembers" }
+            logger.error { "Unknown migrate type '$type'. Supported: teammembers, boardmembers" }
         }
     }
 }
