@@ -13,6 +13,7 @@ import de.febis.crawler.output.MigrationLog
 import de.febis.crawler.output.OutputWriter
 import de.febis.crawler.parser.EventIndexParser
 import de.febis.crawler.parser.EventPageParser
+import de.febis.crawler.migrate.TeamMemberMigrator
 import de.febis.crawler.upload.SupabaseClient
 import de.febis.crawler.upload.SupabaseUploader
 import io.ktor.client.*
@@ -30,6 +31,7 @@ fun main(args: Array<String>) {
     val config = parseArguments(args)
 
     when {
+        config.migrateType != null -> runMigrate(config.crawlerConfig, config.migrateType, config.force)
         config.uploadType != null -> runUpload(config.crawlerConfig, config.uploadType, config.uploadTarget, config.force)
         config.dryRun -> runDryRun(config.crawlerConfig)
         config.singleEvent != null -> runSingleEvent(config.crawlerConfig, config.singleEvent, config.force)
@@ -43,7 +45,8 @@ private data class CliConfig(
     val singleEvent: String? = null,
     val force: Boolean = false,
     val uploadType: String? = null,
-    val uploadTarget: String? = null
+    val uploadTarget: String? = null,
+    val migrateType: String? = null
 )
 
 private fun parseArguments(args: Array<String>): CliConfig {
@@ -52,6 +55,7 @@ private fun parseArguments(args: Array<String>): CliConfig {
     var force = false
     var uploadType: String? = null
     var uploadTarget: String? = null
+    var migrateType: String? = null
 
     val iterator = args.iterator()
     while (iterator.hasNext()) {
@@ -81,6 +85,13 @@ private fun parseArguments(args: Array<String>): CliConfig {
                     logger.error { "--upload requires a type (e.g. 'event')" }
                 }
             }
+            "--migrate" -> {
+                if (iterator.hasNext()) {
+                    migrateType = iterator.next()
+                } else {
+                    logger.error { "--migrate requires a type (e.g. 'teammembers')" }
+                }
+            }
         }
     }
 
@@ -98,7 +109,8 @@ private fun parseArguments(args: Array<String>): CliConfig {
         singleEvent = singleEvent,
         force = force,
         uploadType = uploadType,
-        uploadTarget = uploadTarget
+        uploadTarget = uploadTarget,
+        migrateType = migrateType
     )
 }
 
@@ -310,6 +322,47 @@ private suspend fun processEvent(
     // 5. Write event.json (marks event as crawled for skip-check)
     outputWriter.writeEvent(event)
     logger.info { "Event '$eventId' crawled successfully → ${dirs.root}" }
+}
+
+// ── Migrate ─────────────────────────────────────────────────────────────────
+
+private fun runMigrate(config: CrawlerConfig, type: String, force: Boolean) {
+    if (config.supabaseProjectId.isNullOrBlank() || config.supabaseServiceRoleKey.isNullOrBlank()) {
+        logger.error { "SUPABASE_PROJECT_ID and SUPABASE_SERVICE_ROLE_KEY must be set in .env" }
+        return
+    }
+
+    when (type) {
+        "teammembers" -> {
+            runBlocking {
+                val httpClient = HttpClientFactory.create()
+                try {
+                    val session = AuthenticatedSession(httpClient, config)
+                    val adminUrl = "${config.baseUrl}${config.loginPath}/administration/"
+
+                    when (val authResult = session.authenticate(adminUrl)) {
+                        is CrawlerResult.Failure -> {
+                            logger.error { "Authentication failed: ${authResult.error}" }
+                            return@runBlocking
+                        }
+                        is CrawlerResult.Success -> {}
+                    }
+
+                    val supabaseClient = SupabaseClient(httpClient, config)
+                    val migrator = TeamMemberMigrator(session, httpClient, supabaseClient, config)
+                    when (val result = migrator.migrate(force)) {
+                        is CrawlerResult.Success -> logger.info { "Team members migration completed successfully" }
+                        is CrawlerResult.Failure -> logger.error { "Team members migration failed: ${result.error}" }
+                    }
+                } finally {
+                    httpClient.close()
+                }
+            }
+        }
+        else -> {
+            logger.error { "Unknown migrate type '$type'. Supported: teammembers" }
+        }
+    }
 }
 
 // ── Upload ──────────────────────────────────────────────────────────────────
