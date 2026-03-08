@@ -1,6 +1,7 @@
 package de.febis.crawler.upload
 
 import de.febis.crawler.migrate.BoardMemberData
+import de.febis.crawler.migrate.MemberCompanyData
 import de.febis.crawler.migrate.TeamMemberData
 import de.febis.crawler.model.*
 import kotlinx.serialization.json.*
@@ -79,5 +80,15 @@ object SupabaseMapper {
         put("linkedin_url", member.linkedinUrl?.let { JsonPrimitive(it) } ?: JsonNull)
         put("image_url", imageUrl?.let { JsonPrimitive(it) } ?: JsonNull)
         put("sort_order", member.sortOrder)
+    }
+
+    fun buildCompanyRow(company: MemberCompanyData, countryCode: String): JsonObject = buildJsonObject {
+        put("name", company.name)
+        put("country", countryCode)
+        put("b2b_information", company.b2bInformation)
+        put("b2c_information", company.b2cInformation)
+        put("debt_collection", company.debtCollection)
+        put("marketing_services", company.marketingServices)
+        put("other_services", company.otherServices)
     }
 }
