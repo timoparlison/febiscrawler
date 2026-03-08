@@ -41,6 +41,8 @@ fun main(args: Array<String>) {
     }
 }
 
+// ── CLI Parsing ─────────────────────────────────────────────────────────────
+
 private data class CliConfig(
     val crawlerConfig: CrawlerConfig,
     val dryRun: Boolean = false,
@@ -77,7 +79,6 @@ private fun parseArguments(args: Array<String>): CliConfig {
                     if (iterator.hasNext()) {
                         val next = iterator.next()
                         if (next.startsWith("--")) {
-                            // It's a flag, not a target — handle it
                             if (next == "--force") force = true
                         } else {
                             uploadTarget = next
@@ -116,35 +117,61 @@ private fun parseArguments(args: Array<String>): CliConfig {
     )
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+private fun requireSupabaseConfig(config: CrawlerConfig): Boolean {
+    if (config.supabaseProjectId.isNullOrBlank() || config.supabaseServiceRoleKey.isNullOrBlank()) {
+        logger.error { "SUPABASE_PROJECT_ID and SUPABASE_SERVICE_ROLE_KEY must be set in .env" }
+        return false
+    }
+    return true
+}
+
+private fun <T> withHttpClient(block: suspend (HttpClient) -> T): T = runBlocking {
+    val client = HttpClientFactory.create()
+    try {
+        block(client)
+    } finally {
+        client.close()
+    }
+}
+
+private suspend fun authenticate(client: HttpClient, config: CrawlerConfig, targetUrl: String): AuthenticatedSession? {
+    val session = AuthenticatedSession(client, config)
+    return when (val result = session.authenticate(targetUrl)) {
+        is CrawlerResult.Failure -> {
+            logger.error { "Authentication failed: ${result.error}" }
+            null
+        }
+        is CrawlerResult.Success -> session
+    }
+}
+
+private fun logResult(label: String, result: CrawlerResult<Unit>) {
+    when (result) {
+        is CrawlerResult.Success -> logger.info { "$label completed successfully" }
+        is CrawlerResult.Failure -> logger.error { "$label failed: ${result.error}" }
+    }
+}
+
+// ── Crawl ───────────────────────────────────────────────────────────────────
+
 private fun runDryRun(config: CrawlerConfig) {
     logger.info { "Running in dry-run mode - listing events" }
 
-    runBlocking {
-        val client = HttpClientFactory.create()
-        try {
-            val session = AuthenticatedSession(client, config)
-            val indexUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/"
+    withHttpClient { client ->
+        val indexUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/"
+        val session = authenticate(client, config, indexUrl) ?: return@withHttpClient
 
-            when (val authResult = session.authenticate(indexUrl)) {
-                is CrawlerResult.Failure -> {
-                    logger.error { "Authentication failed: ${authResult.error}" }
-                    return@runBlocking
-                }
-                is CrawlerResult.Success -> {}
-            }
+        val events = fetchEventIndex(session, config) ?: return@withHttpClient
 
-            val events = fetchEventIndex(session, config) ?: return@runBlocking
+        val migrationLog = MigrationLog(config.outputDir)
+        val crawledIds = migrationLog.getCrawledEventIds()
 
-            val migrationLog = MigrationLog(config.outputDir)
-            val crawledIds = migrationLog.getCrawledEventIds()
-
-            logger.info { "=== FEBIS Events (${events.size} total, ${crawledIds.size} already crawled) ===" }
-            for (entry in events) {
-                val status = if (entry.id in crawledIds) "[DONE]" else "[    ]"
-                logger.info { "  $status ${entry.id} - ${entry.title}" }
-            }
-        } finally {
-            client.close()
+        logger.info { "=== FEBIS Events (${events.size} total, ${crawledIds.size} already crawled) ===" }
+        for (entry in events) {
+            val status = if (entry.id in crawledIds) "[DONE]" else "[    ]"
+            logger.info { "  $status ${entry.id} - ${entry.title}" }
         }
     }
 }
@@ -158,86 +185,50 @@ private fun runSingleEvent(config: CrawlerConfig, eventId: String, force: Boolea
         return
     }
 
-    runBlocking {
-        val client = HttpClientFactory.create()
-        try {
-            val session = AuthenticatedSession(client, config)
-            val eventUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/$eventId/"
-
-            when (val authResult = session.authenticate(eventUrl)) {
-                is CrawlerResult.Failure -> {
-                    logger.error { "Authentication failed: ${authResult.error}" }
-                    return@runBlocking
-                }
-                is CrawlerResult.Success -> {}
-            }
-
-            processEvent(client, session, config, eventId)
-        } finally {
-            client.close()
-        }
+    withHttpClient { client ->
+        val eventUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/$eventId/"
+        val session = authenticate(client, config, eventUrl) ?: return@withHttpClient
+        processEvent(client, session, config, eventId)
     }
 }
 
 private fun runFullMigration(config: CrawlerConfig) {
     logger.info { "Starting full migration" }
 
-    runBlocking {
-        val client = HttpClientFactory.create()
-        try {
-            val session = AuthenticatedSession(client, config)
-            val indexUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/"
+    withHttpClient { client ->
+        val indexUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/"
+        val session = authenticate(client, config, indexUrl) ?: return@withHttpClient
 
-            when (val authResult = session.authenticate(indexUrl)) {
-                is CrawlerResult.Failure -> {
-                    logger.error { "Authentication failed: ${authResult.error}" }
-                    return@runBlocking
-                }
-                is CrawlerResult.Success -> {}
+        val events = fetchEventIndex(session, config) ?: return@withHttpClient
+
+        val outputWriter = OutputWriter(config.outputDir)
+        outputWriter.writeEventsIndex(events)
+
+        val migrationLog = MigrationLog(config.outputDir)
+        val crawledIds = migrationLog.getCrawledEventIds()
+        val toProcess = events.filter { it.id !in crawledIds }
+
+        logger.info { "Found ${events.size} events total, ${crawledIds.size} already crawled, ${toProcess.size} to process" }
+
+        var succeeded = 0
+        var failed = 0
+
+        for ((idx, entry) in toProcess.withIndex()) {
+            logger.info { "=== [${idx + 1}/${toProcess.size}] Processing event: ${entry.id} ===" }
+            try {
+                processEvent(client, session, config, entry.id)
+                succeeded++
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to process event ${entry.id}" }
+                failed++
             }
-
-            // Fetch and parse event index
-            val events = fetchEventIndex(session, config) ?: return@runBlocking
-
-            // Save events index
-            val outputWriter = OutputWriter(config.outputDir)
-            outputWriter.writeEventsIndex(events)
-
-            // Determine which events still need processing
-            val migrationLog = MigrationLog(config.outputDir)
-            val crawledIds = migrationLog.getCrawledEventIds()
-            val toProcess = events.filter { it.id !in crawledIds }
-
-            logger.info { "Found ${events.size} events total, ${crawledIds.size} already crawled, ${toProcess.size} to process" }
-
-            var succeeded = 0
-            var failed = 0
-
-            for ((idx, entry) in toProcess.withIndex()) {
-                logger.info { "=== [${idx + 1}/${toProcess.size}] Processing event: ${entry.id} ===" }
-                try {
-                    processEvent(client, session, config, entry.id)
-                    succeeded++
-                } catch (e: Exception) {
-                    logger.error(e) { "Failed to process event ${entry.id}" }
-                    failed++
-                }
-            }
-
-            logger.info { "=== Migration complete: $succeeded succeeded, $failed failed, ${crawledIds.size} skipped ===" }
-        } finally {
-            client.close()
         }
+
+        logger.info { "=== Migration complete: $succeeded succeeded, $failed failed, ${crawledIds.size} skipped ===" }
     }
 }
 
-/**
- * Fetches and parses the event index page to discover all events.
- */
-private suspend fun fetchEventIndex(
-    session: AuthenticatedSession,
-    config: CrawlerConfig
-): List<EventIndexEntry>? {
+private suspend fun fetchEventIndex(session: AuthenticatedSession, config: CrawlerConfig): List<EventIndexEntry>? {
     val indexUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/"
 
     val html = when (val result = session.fetchPage(indexUrl)) {
@@ -259,18 +250,9 @@ private suspend fun fetchEventIndex(
     }
 }
 
-/**
- * Processes a single event: fetch page, parse, download files, write event.json.
- */
-private suspend fun processEvent(
-    client: HttpClient,
-    session: AuthenticatedSession,
-    config: CrawlerConfig,
-    eventId: String
-) {
+private suspend fun processEvent(client: HttpClient, session: AuthenticatedSession, config: CrawlerConfig, eventId: String) {
     val eventUrl = "${config.baseUrl}${config.loginPath}${config.indexPath}/$eventId/"
 
-    // 1. Fetch event page
     val html = when (val pageResult = session.fetchPage(eventUrl)) {
         is CrawlerResult.Success -> pageResult.data
         is CrawlerResult.Failure -> {
@@ -279,7 +261,6 @@ private suspend fun processEvent(
         }
     }
 
-    // 2. Parse HTML
     val parser = EventPageParser(config.baseUrl)
     val event = when (val parseResult = parser.parse(html, eventId, eventUrl)) {
         is CrawlerResult.Success -> parseResult.data
@@ -289,16 +270,13 @@ private suspend fun processEvent(
         }
     }
 
-    // 3. Create output directories
     val outputWriter = OutputWriter(config.outputDir)
     val dirs = outputWriter.createEventDirectories(eventId)
 
-    // 4. Download all files
     val downloader = FileDownloader(client, config.maxRetries)
     val queue = DownloadQueue(downloader, config.maxParallelDownloads, config.requestDelayMs)
 
     val downloadTasks = mutableListOf<DownloadQueue.DownloadTask>()
-
     for (doc in event.documents) {
         downloadTasks.add(DownloadQueue.DownloadTask(doc.originalUrl, dirs.root.resolve(doc.localPath)))
     }
@@ -321,7 +299,6 @@ private suspend fun processEvent(
     val downloadFailed = results.count { it is CrawlerResult.Failure }
     logger.info { "Downloads complete: $downloadSucceeded succeeded, $downloadFailed failed" }
 
-    // 5. Write event.json (marks event as crawled for skip-check)
     outputWriter.writeEvent(event)
     logger.info { "Event '$eventId' crawled successfully → ${dirs.root}" }
 }
@@ -329,71 +306,40 @@ private suspend fun processEvent(
 // ── Migrate ─────────────────────────────────────────────────────────────────
 
 private fun runMigrate(config: CrawlerConfig, type: String, force: Boolean) {
-    if (config.supabaseProjectId.isNullOrBlank() || config.supabaseServiceRoleKey.isNullOrBlank()) {
-        logger.error { "SUPABASE_PROJECT_ID and SUPABASE_SERVICE_ROLE_KEY must be set in .env" }
-        return
-    }
+    if (!requireSupabaseConfig(config)) return
 
     when (type) {
-        "teammembers" -> {
-            runBlocking {
-                val httpClient = HttpClientFactory.create()
-                try {
-                    val session = AuthenticatedSession(httpClient, config)
-                    val adminUrl = "${config.baseUrl}${config.loginPath}/administration/"
+        "teammembers" -> migrateTeamMembers(config, force)
+        "boardmembers" -> migrateBoardMembers(config, force)
+        "companies" -> migrateCompanies(config, force)
+        else -> logger.error { "Unknown migrate type '$type'. Supported: teammembers, boardmembers, companies" }
+    }
+}
 
-                    when (val authResult = session.authenticate(adminUrl)) {
-                        is CrawlerResult.Failure -> {
-                            logger.error { "Authentication failed: ${authResult.error}" }
-                            return@runBlocking
-                        }
-                        is CrawlerResult.Success -> {}
-                    }
+private fun migrateTeamMembers(config: CrawlerConfig, force: Boolean) {
+    withHttpClient { client ->
+        val adminUrl = "${config.baseUrl}${config.loginPath}/administration/"
+        val session = authenticate(client, config, adminUrl) ?: return@withHttpClient
 
-                    val supabaseClient = SupabaseClient(httpClient, config)
-                    val migrator = TeamMemberMigrator(session, httpClient, supabaseClient, config)
-                    when (val result = migrator.migrate(force)) {
-                        is CrawlerResult.Success -> logger.info { "Team members migration completed successfully" }
-                        is CrawlerResult.Failure -> logger.error { "Team members migration failed: ${result.error}" }
-                    }
-                } finally {
-                    httpClient.close()
-                }
-            }
-        }
-        "boardmembers" -> {
-            runBlocking {
-                val httpClient = HttpClientFactory.create()
-                try {
-                    val supabaseClient = SupabaseClient(httpClient, config)
-                    val migrator = BoardMemberMigrator(httpClient, supabaseClient, config)
-                    when (val result = migrator.migrate(force)) {
-                        is CrawlerResult.Success -> logger.info { "Board members migration completed successfully" }
-                        is CrawlerResult.Failure -> logger.error { "Board members migration failed: ${result.error}" }
-                    }
-                } finally {
-                    httpClient.close()
-                }
-            }
-        }
-        "companies" -> {
-            runBlocking {
-                val httpClient = HttpClientFactory.create()
-                try {
-                    val supabaseClient = SupabaseClient(httpClient, config)
-                    val migrator = MemberCompanyMigrator(httpClient, supabaseClient, config)
-                    when (val result = migrator.migrate(force)) {
-                        is CrawlerResult.Success -> logger.info { "Member companies migration completed successfully" }
-                        is CrawlerResult.Failure -> logger.error { "Member companies migration failed: ${result.error}" }
-                    }
-                } finally {
-                    httpClient.close()
-                }
-            }
-        }
-        else -> {
-            logger.error { "Unknown migrate type '$type'. Supported: teammembers, boardmembers, companies" }
-        }
+        val supabase = SupabaseClient(client, config)
+        val result = TeamMemberMigrator(session, client, supabase, config).migrate(force)
+        logResult("Team members migration", result)
+    }
+}
+
+private fun migrateBoardMembers(config: CrawlerConfig, force: Boolean) {
+    withHttpClient { client ->
+        val supabase = SupabaseClient(client, config)
+        val result = BoardMemberMigrator(client, supabase, config).migrate(force)
+        logResult("Board members migration", result)
+    }
+}
+
+private fun migrateCompanies(config: CrawlerConfig, force: Boolean) {
+    withHttpClient { client ->
+        val supabase = SupabaseClient(client, config)
+        val result = MemberCompanyMigrator(client, supabase, config).migrate(force)
+        logResult("Member companies migration", result)
     }
 }
 
@@ -406,19 +352,14 @@ private fun runUpload(config: CrawlerConfig, type: String, target: String?, forc
                 logger.error { "--upload event requires an event ID, e.g. --upload event 2025-rhodes" }
                 return
             }
-            runUploadEvent(config, target, force)
+            uploadEvent(config, target, force)
         }
-        else -> {
-            logger.error { "Unknown upload type '$type'. Supported: event" }
-        }
+        else -> logger.error { "Unknown upload type '$type'. Supported: event" }
     }
 }
 
-private fun runUploadEvent(config: CrawlerConfig, eventId: String, force: Boolean) {
-    if (config.supabaseProjectId.isNullOrBlank() || config.supabaseServiceRoleKey.isNullOrBlank()) {
-        logger.error { "SUPABASE_PROJECT_ID and SUPABASE_SERVICE_ROLE_KEY must be set in .env" }
-        return
-    }
+private fun uploadEvent(config: CrawlerConfig, eventId: String, force: Boolean) {
+    if (!requireSupabaseConfig(config)) return
 
     val eventDir = config.outputDir.resolve("events").resolve(eventId)
     val eventJsonFile = eventDir.resolve("event.json")
@@ -431,17 +372,9 @@ private fun runUploadEvent(config: CrawlerConfig, eventId: String, force: Boolea
     val event = json.decodeFromString<Event>(Files.readString(eventJsonFile))
     logger.info { "Loaded event '${event.id}' (${event.title})" }
 
-    runBlocking {
-        val httpClient = HttpClientFactory.create()
-        try {
-            val supabaseClient = SupabaseClient(httpClient, config)
-            val uploader = SupabaseUploader(supabaseClient, eventDir)
-            when (val result = uploader.upload(event, force)) {
-                is CrawlerResult.Success -> logger.info { "Event '$eventId' uploaded successfully" }
-                is CrawlerResult.Failure -> logger.error { "Upload failed: ${result.error}" }
-            }
-        } finally {
-            httpClient.close()
-        }
+    withHttpClient { client ->
+        val supabase = SupabaseClient(client, config)
+        val result = SupabaseUploader(supabase, eventDir).upload(event, force)
+        logResult("Event '$eventId' upload", result)
     }
 }
