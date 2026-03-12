@@ -100,6 +100,7 @@ private fun parseArguments(args: Array<String>): CliConfig {
 
     val crawlerConfig = CrawlerConfig(
         baseUrl = EnvLoader.get("FEBIS_BASE_URL") ?: "https://www.febis.org",
+        loginPath = EnvLoader.get("FEBIS_LOGIN_PATH") ?: "/members-login",
         password = EnvLoader.require("FEBIS_MEMBER_PASSWORD"),
         indexPath = EnvLoader.get("FEBIS_INDEX_PATH") ?: "/general-assembly",
         supabaseProjectId = EnvLoader.get("SUPABASE_PROJECT_ID"),
@@ -261,7 +262,8 @@ private suspend fun processEvent(client: HttpClient, session: AuthenticatedSessi
         }
     }
 
-    val parser = EventPageParser(config.baseUrl)
+    val eventType = config.indexPath.trimStart('/')
+    val parser = EventPageParser(config.baseUrl, eventType)
     val event = when (val parseResult = parser.parse(html, eventId, eventUrl)) {
         is CrawlerResult.Success -> parseResult.data
         is CrawlerResult.Failure -> {

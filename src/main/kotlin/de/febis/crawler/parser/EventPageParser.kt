@@ -16,7 +16,7 @@ private val logger = KotlinLogging.logger {}
 private val datePattern = Regex("""(\d{2})\.(\d{2})\.(\d{4})""")
 private val youtubeIdPattern = Regex("""/embed/([a-zA-Z0-9_-]+)""")
 
-class EventPageParser(private val baseUrl: String) {
+class EventPageParser(private val baseUrl: String, private val eventType: String = "general-assembly") {
 
     fun parse(html: String, eventId: String, sourceUrl: String): CrawlerResult<Event> {
         return try {
@@ -36,7 +36,7 @@ class EventPageParser(private val baseUrl: String) {
             val event = Event(
                 id = eventId,
                 title = title,
-                eventType = "general-assembly",
+                eventType = eventType,
                 dateStart = dateStart,
                 dateEnd = dateEnd,
                 locationCity = city,
