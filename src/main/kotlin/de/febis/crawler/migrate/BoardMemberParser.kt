@@ -53,6 +53,7 @@ class BoardMemberParser {
 
     private fun parseModule(module: Element, sortOrder: Int): BoardMemberData? {
         val imageUrl = extractImageUrl(module)
+        val readMoreUrl = extractReadMoreUrl(module)
         val textDiv = module.selectFirst(".cc-m-textwithimage-inline-rte") ?: return null
 
         // Extract role from red-colored text in h3
@@ -70,6 +71,7 @@ class BoardMemberParser {
         var currentSection: String? = null
         val positions = mutableListOf<String>()
         val profileLines = mutableListOf<String>()
+        val ambitionLines = mutableListOf<String>()
 
         for (p in paragraphs) {
             val text = p.text().trim()
@@ -122,7 +124,7 @@ class BoardMemberParser {
                 }
                 "positions" -> positions.add(text)
                 "profile" -> profileLines.add(text)
-                "ambition" -> {} // Not commonly used, could be added later
+                "ambition" -> ambitionLines.add(text)
             }
         }
 
@@ -138,9 +140,79 @@ class BoardMemberParser {
             location = location,
             currentPositions = if (positions.isNotEmpty()) positions.joinToString("\n") else null,
             profile = if (profileLines.isNotEmpty()) profileLines.joinToString("\n") else null,
+            ambition = if (ambitionLines.isNotEmpty()) ambitionLines.joinToString("\n") else null,
             imageUrl = imageUrl,
-            sortOrder = sortOrder
+            sortOrder = sortOrder,
+            readMoreUrl = readMoreUrl
         )
+    }
+
+    fun parseSubpage(html: String): CrawlerResult<BoardMemberSubpageData> {
+        return try {
+            val doc = Jsoup.parse(html)
+            val module = doc.selectFirst("#content_area .j-textWithImage")
+                ?: return CrawlerResult.Failure(
+                    CrawlerError.ParseError("board-subpage", "No .j-textWithImage in #content_area")
+                )
+            val textDiv = module.selectFirst(".cc-m-textwithimage-inline-rte")
+                ?: return CrawlerResult.Failure(
+                    CrawlerError.ParseError("board-subpage", "No .cc-m-textwithimage-inline-rte")
+                )
+
+            var currentSection: String? = null
+            val positions = mutableListOf<String>()
+            val profileLines = mutableListOf<String>()
+            val ambitionLines = mutableListOf<String>()
+
+            for (p in textDiv.select("p")) {
+                val text = p.text().trim()
+                if (text.isBlank()) continue
+
+                val isRedHeader = p.selectFirst("[style*='color: #ff0000'], [style*='color: red']") != null
+                if (isRedHeader) {
+                    currentSection = when {
+                        text.contains("Current", ignoreCase = true) || text.contains("Position", ignoreCase = true) -> "positions"
+                        text.contains("Profile", ignoreCase = true) -> "profile"
+                        text.contains("Ambition", ignoreCase = true) -> "ambition"
+                        else -> null // e.g. "For more information:"
+                    }
+                    continue
+                }
+
+                if (text.startsWith("Linkedin:", ignoreCase = true) || text.startsWith("LinkedIn:", ignoreCase = true)) continue
+
+                when (currentSection) {
+                    "positions" -> positions.add(text)
+                    "profile" -> profileLines.add(text)
+                    "ambition" -> ambitionLines.add(text)
+                }
+            }
+
+            val linkedinUrl = module.selectFirst("a[href*=linkedin.com]")?.attr("href")?.takeIf { it.isNotBlank() }
+
+            CrawlerResult.Success(
+                BoardMemberSubpageData(
+                    currentPositions = if (positions.isNotEmpty()) positions.joinToString("\n") else null,
+                    profile = if (profileLines.isNotEmpty()) profileLines.joinToString("\n") else null,
+                    ambition = if (ambitionLines.isNotEmpty()) ambitionLines.joinToString("\n") else null,
+                    linkedinUrl = linkedinUrl
+                )
+            )
+        } catch (e: Exception) {
+            CrawlerResult.Failure(
+                CrawlerError.ParseError("board-subpage", "Parse error: ${e.message}")
+            )
+        }
+    }
+
+    private fun extractReadMoreUrl(module: Element): String? {
+        for (a in module.select("a[href]")) {
+            if (a.text().contains("Click here", ignoreCase = true)) {
+                val href = a.attr("href").trim()
+                if (href.isNotEmpty()) return href
+            }
+        }
+        return null
     }
 
     private fun extractRole(textDiv: Element): String? {

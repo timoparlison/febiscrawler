@@ -40,16 +40,26 @@ class BoardMemberMigrator(
             Files.writeString(debugDir.resolve("executive-board.html"), html)
             logger.info { "Saved HTML to ${debugDir.resolve("executive-board.html")}" }
 
-            // 2. Parse
+            // 2. Parse index
             val parser = BoardMemberParser()
-            val members = when (val result = parser.parse(html)) {
+            val indexMembers = when (val result = parser.parse(html)) {
                 is CrawlerResult.Success -> result.data
                 is CrawlerResult.Failure -> return CrawlerResult.Failure(result.error)
             }
 
-            if (members.isEmpty()) {
+            if (indexMembers.isEmpty()) {
                 logger.warn { "No board members found on page" }
                 return CrawlerResult.Success(Unit)
+            }
+
+            // 2b. Fetch and merge subpage data for each member
+            val members = indexMembers.map { member ->
+                val href = member.readMoreUrl
+                if (href.isNullOrBlank()) {
+                    logger.warn { "No read-more link for ${member.name} – using teaser data only" }
+                    return@map member
+                }
+                enrichWithSubpage(member, href, parser, debugDir)
             }
 
             logger.info { "Found ${members.size} board members:" }
@@ -83,6 +93,42 @@ class BoardMemberMigrator(
         } catch (e: Exception) {
             logger.error(e) { "Board member migration failed" }
             return CrawlerResult.Failure(CrawlerError.SupabaseError("migrate-boardmembers", e.message ?: "Unknown error"))
+        }
+    }
+
+    private suspend fun enrichWithSubpage(
+        member: BoardMemberData,
+        href: String,
+        parser: BoardMemberParser,
+        debugDir: java.nio.file.Path
+    ): BoardMemberData {
+        val url = if (href.startsWith("http", ignoreCase = true)) href else "${config.baseUrl}$href"
+        return try {
+            delay(config.requestDelayMs)
+            val response = httpClient.get(url)
+            val subHtml = response.bodyAsText()
+
+            val slug = Slugify.slugify(member.name)
+            Files.writeString(debugDir.resolve("executive-board-$slug.html"), subHtml)
+
+            when (val result = parser.parseSubpage(subHtml)) {
+                is CrawlerResult.Success -> {
+                    val sub = result.data
+                    member.copy(
+                        currentPositions = sub.currentPositions ?: member.currentPositions,
+                        profile = sub.profile ?: member.profile,
+                        ambition = sub.ambition ?: member.ambition,
+                        linkedinUrl = sub.linkedinUrl ?: member.linkedinUrl
+                    )
+                }
+                is CrawlerResult.Failure -> {
+                    logger.warn { "Failed to parse subpage for ${member.name} ($url): ${result.error}" }
+                    member
+                }
+            }
+        } catch (e: Exception) {
+            logger.warn { "Failed to fetch subpage for ${member.name} ($url): ${e.message}" }
+            member
         }
     }
 

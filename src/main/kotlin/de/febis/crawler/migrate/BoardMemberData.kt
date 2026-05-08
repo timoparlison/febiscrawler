@@ -10,5 +10,13 @@ data class BoardMemberData(
     val ambition: String? = null,
     val linkedinUrl: String? = null,
     val imageUrl: String? = null,
-    val sortOrder: Int = 0
+    val sortOrder: Int = 0,
+    val readMoreUrl: String? = null
+)
+
+data class BoardMemberSubpageData(
+    val currentPositions: String? = null,
+    val profile: String? = null,
+    val ambition: String? = null,
+    val linkedinUrl: String? = null
 )
